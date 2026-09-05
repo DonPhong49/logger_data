@@ -75,6 +75,23 @@ uint8_t sample_count = 0;
 /* UART Protocol Buffers */
 uint8_t packet_counter = 0;
 uint8_t tx_frame_buffer[FRAME_SIZE] = {0};
+
+/* ========================================================================== */
+/* DEBUG VARIABLES (Dùng để xem trực tiếp trong STM32CubeIDE Live Expressions) */
+/* ========================================================================== */
+/* Điện áp tức thời hiển thị dạng số thực (Volt) */
+float debug_volt_mcu[NUM_CHANNELS] = {0.0f};     /* Điện áp tại chân MCU (0.000V - 3.300V) */
+float debug_volt_input[NUM_CHANNELS] = {0.0f};   /* Điện áp đầu vào trước mạch chia áp (0.000V - 12.000V) */
+
+/* Bộ đếm tổng số lần thực thi */
+volatile uint32_t debug_adc_irq_count = 0;       /* Tổng số lần ngắt ADC DMA (tăng liên tục ~1000 lần/giây) */
+volatile uint32_t debug_packets_generated = 0;   /* Tổng số gói dữ liệu đã tạo ra (tăng liên tục ~250 lần/giây) */
+volatile uint32_t debug_uart_tx_attempts = 0;    /* Số lần kích hoạt truyền UART */
+volatile uint32_t debug_uart_tx_busy_count = 0;  /* Số lần phát hiện UART bận (mục tiêu: 0) */
+
+/* Tần số thực tế đo được qua SysTick (cập nhật tự động mỗi 1 giây) */
+volatile uint32_t debug_adc_samples_per_sec = 0; /* Tần số lấy mẫu ADC thực tế (kỳ vọng hiển thị ~1000) */
+volatile uint32_t debug_packets_per_sec = 0;     /* Tần số gói tin gửi lên thực tế (kỳ vọng hiển thị ~250) */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -103,6 +120,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
   {
     /* Fast non-blocking ISR: set event flag and return immediately */
     adc_data_ready = true;
+    debug_adc_irq_count++;
   }
 }
 
@@ -203,8 +221,13 @@ void FSM_Run(void)
       {
         adc_avg_data[i] = (uint16_t)(adc_accumulator[i] / SAMPLES_TO_AVERAGE);
         adc_accumulator[i] = 0;
+
+        /* Calculate debug voltages for Live Expressions */
+        debug_volt_mcu[i] = ((float)adc_avg_data[i] * 3.3f) / 65535.0f;
+        debug_volt_input[i] = debug_volt_mcu[i] * (12.0f / 3.3f);
       }
       sample_count = 0;
+      debug_packets_generated++;
 
       /* Package frame */
       Build_Tx_Frame();
@@ -213,6 +236,7 @@ void FSM_Run(void)
       break;
 
     case FSM_STATE_SEND_DATA:
+      debug_uart_tx_attempts++;
       /* Transmit via UART DMA if not busy */
       if (!uart_tx_busy)
       {
@@ -222,12 +246,30 @@ void FSM_Run(void)
           uart_tx_busy = false;
         }
       }
+      else
+      {
+        debug_uart_tx_busy_count++;
+      }
       current_state = FSM_STATE_IDLE;
       break;
 
     default:
       current_state = FSM_STATE_IDLE;
       break;
+  }
+
+  /* Compute 1-second diagnostic rates (tần số thực tế) */
+  static uint32_t last_stats_tick = 0;
+  static uint32_t last_adc_count = 0;
+  static uint32_t last_pkt_count = 0;
+  uint32_t current_tick = HAL_GetTick();
+  if (current_tick - last_stats_tick >= 1000)
+  {
+    debug_adc_samples_per_sec = debug_adc_irq_count - last_adc_count;
+    debug_packets_per_sec = debug_packets_generated - last_pkt_count;
+    last_adc_count = debug_adc_irq_count;
+    last_pkt_count = debug_packets_generated;
+    last_stats_tick = current_tick;
   }
 }
 /* USER CODE END 0 */
@@ -382,7 +424,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T2_TRGO;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_ONESHOT;
+  hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_CIRCULAR;
   hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
   hadc1.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
   hadc1.Init.OversamplingMode = DISABLE;
