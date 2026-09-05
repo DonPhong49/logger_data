@@ -2,6 +2,17 @@
 Debug/
 Release/
 
+# Python Virtual Environment and Bytecode
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data logging outputs
+*.csv
+logs/
+
 # OS / Editor generated
 .DS_Store
 Thumbs.db
