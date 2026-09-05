@@ -38,14 +38,42 @@ Hệ thống có nhiệm vụ thu thập tín hiệu analog từ 8 kênh độc 
 
 ### 2.2. Xử lý dữ liệu & Thuật toán lọc trung bình (Averaging / Decimation)
 * Tần số lấy mẫu ADC đầu vào: **1 kHz (1000 mẫu/giây/kênh)**.
-* Tần số truyền dữ liệu lên máy tính: **400 Hz (400 gói/giây)**.
-* **Phân tích toán học:** Tỷ lệ lấy mẫu / truyền = 1000 / 400 = 2.5 (nghĩa là trong 10 ms có 10 mẫu ADC và có 4 gói tin UART được gửi đi).
-* **Thuật toán xử lý trên MCU:**
-  * *Cách 1 (Bộ lọc trung bình trượt - Moving Average Filter):* Mỗi khi có mẫu 1 kHz mới, cập nhật vào mảng trượt kích thước N (ví dụ N = 4 hoặc 8). Một Timer phụ chạy ở tần số 400 Hz (hoặc biến đếm ngắt chu kỳ 2.5 ms) sẽ lấy giá trị trung bình trượt hiện tại đóng gói và kích hoạt gửi UART DMA.
-  * *Cách 2 (Lấy mẫu theo chu kỳ linh hoạt):* Lần gửi 1 lấy trung bình 2 mẫu ADC, lần gửi 2 lấy trung bình 3 mẫu ADC (xen kẽ 2 - 3 - 2 - 3 = trung bình 2.5 mẫu/lần gửi).
-  * *Gợi ý nâng cao nếu được phép tinh chỉnh Timer ADC:* Có thể cho Timer ADC kích hoạt ở 1200 Hz (trung bình 3 mẫu -> ra 400 Hz) hoặc 2000 Hz (trung bình 5 mẫu -> ra 400 Hz) để phép chia trung bình hoàn toàn nguyên và triệt tiêu nhiễu cao tần tốt hơn.
+* Quy tắc tính trung bình theo yêu cầu: Cứ sau **4 mẫu ADC** được thu thập (chu kỳ 4 ms, tương đương tần số bắn lên máy tính ~250 Hz hoặc cấu hình linh hoạt số mẫu):
+  * Mẫu 8 kênh được cộng dồn vào mảng tích lũy `uint32_t sum[8]`.
+  * Khi bộ đếm đạt đủ 4 mẫu, FSM kích hoạt tính giá trị trung bình: `avg[i] = sum[i] / 4`.
+  * Đóng gói khung truyền 21 bytes và kích hoạt DMA UART gửi dữ liệu lên máy tính.
 
-### 2.3. Thiết kế giao thức truyền thông (UART Packet Protocol)
+### 2.3. Kiến trúc Máy trạng thái (FSM - Finite State Machine) trong Main Loop
+Chương trình chính được cấu trúc dạng máy trạng thái phi phong tỏa (Non-blocking FSM), tách bạch rõ ràng giữa xử lý ngắt cứng (ISR) và xử lý tính toán trong vòng lặp chính (`main loop`):
+
+```
+[Timer 1 kHz] ──> [ADC 8CH] ──> [DMA Transfer] ──> [DMA Interrupt Callback]
+                                                             │
+                                                     (Đặt cờ data_ready = 1)
+                                                             │
+                                                             ▼ (Main loop)
+                                                    [FSM_STATE_IDLE]
+                                                             │ (data_ready == 1)
+                                                             ▼
+                                                [FSM_STATE_PROCESS_SAMPLE]
+                                                - Cộng dồn sum[i] += raw[i]
+                                                - sample_count++
+                                                - Nếu sample_count < 4: về IDLE
+                                                - Nếu sample_count >= 4:
+                                                             │
+                                                             ▼
+                                                 [FSM_STATE_CALC_AVERAGE]
+                                                - avg[i] = sum[i] / 4
+                                                - Reset sum[i] = 0, count = 0
+                                                - Đóng gói frame 21 bytes
+                                                             │
+                                                             ▼
+                                                   [FSM_STATE_SEND_DATA]
+                                                - Gọi HAL_UART_Transmit_DMA
+                                                - Trở về FSM_STATE_IDLE
+```
+
+### 2.4. Thiết kế giao thức truyền thông (UART Packet Protocol)
 Để đảm bảo ứng dụng máy tính nhận đúng từng khung dữ liệu ở tốc độ 400 Hz, tránh hiện tượng lệch pha byte, khung dữ liệu nhị phân (Binary Protocol) được thiết kế nhỏ gọn, tối ưu băng thông:
 
 #### Cấu trúc khung dữ liệu (Tổng cộng: 21 bytes/gói):
