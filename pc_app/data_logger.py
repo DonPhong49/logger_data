@@ -1,6 +1,7 @@
 """
 Module: data_logger.py
 Ghi dữ liệu 8 kênh đo vào tệp CSV với định dạng thời gian chuẩn và cơ chế đệm chống nghẽn I/O.
+Hỗ trợ xuất phiên đo (Capture Export) theo dải thời gian chọn lọc phong cách Saleae Logic.
 """
 
 import os
@@ -23,7 +24,7 @@ class DataLogger:
 
     def start(self, output_dir: str = "logs", custom_filename: Optional[str] = None) -> str:
         """
-        Bắt đầu ghi file log mới.
+        Bắt đầu ghi file log mới liên tục xuống đĩa.
         Trả về đường dẫn file đã tạo.
         """
         if not os.path.exists(output_dir):
@@ -112,3 +113,62 @@ class DataLogger:
             "total_rows": self.total_rows_logged,
             "file_size_kb": file_size_kb,
         }
+
+    @staticmethod
+    def export_data(
+        file_path: str,
+        time_list: list,
+        channels_data: list,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> int:
+        """
+        Xuất bộ nhớ đệm RAM (toàn bộ hoặc dải thời gian chọn lọc) ra tệp CSV.
+        Trả về tổng số dòng đã xuất.
+        """
+        if not time_list or not channels_data:
+            return 0
+
+        directory = os.path.dirname(file_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        rows_written = 0
+        t0 = time_list[0]
+
+        with open(file_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            # Header
+            header = [
+                "Time_Relative_s",
+                "Timestamp_s",
+                "CH1_V",
+                "CH2_V",
+                "CH3_V",
+                "CH4_V",
+                "CH5_V",
+                "CH6_V",
+                "CH7_V",
+                "CH8_V",
+            ]
+            writer.writerow(header)
+
+            num_points = len(time_list)
+            for idx in range(num_points):
+                t = time_list[idx]
+                # Lọc theo khoảng thời gian nếu có
+                if start_time is not None and t < start_time:
+                    continue
+                if end_time is not None and t > end_time:
+                    continue
+
+                rel_t = t - t0
+                row = [
+                    f"{rel_t:.4f}",
+                    f"{t:.4f}",
+                    *[f"{channels_data[ch][idx]:.4f}" for ch in range(len(channels_data))],
+                ]
+                writer.writerow(row)
+                rows_written += 1
+
+        return rows_written
