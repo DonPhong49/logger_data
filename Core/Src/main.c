@@ -313,6 +313,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
   FSM_Init();
 
+  /* Calibrate ADC1 (Offset & Linearity) for 16-bit accuracy */
+  HAL_ADCEx_Calibration_Start(&hadc1, ADC_CALIB_OFFSET_LINEARITY, ADC_SINGLE_ENDED);
+
   /* Start ADC1 with DMA */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_raw_buffer, NUM_CHANNELS);
 
