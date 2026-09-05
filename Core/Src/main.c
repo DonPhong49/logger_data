@@ -21,17 +21,29 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+/* Finite State Machine (FSM) states */
+typedef enum {
+  FSM_STATE_IDLE = 0,         /* Wait for ADC DMA completion event */
+  FSM_STATE_PROCESS_SAMPLE,   /* Accumulate 8-channel sample */
+  FSM_STATE_CALC_AVERAGE,     /* Calculate 4-sample average and build packet */
+  FSM_STATE_SEND_DATA         /* Transmit frame via UART DMA */
+} FSM_State_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define NUM_CHANNELS           8
+#define SAMPLES_TO_AVERAGE     4
+#define FRAME_HEADER_1         0xAA
+#define FRAME_HEADER_2         0x55
+#define FRAME_TAIL             0x0D
+#define FRAME_SIZE             21
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -44,9 +56,23 @@ ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
 UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
+/* Flags and FSM State */
+volatile bool adc_data_ready = false;
+volatile bool uart_tx_busy = false;
+FSM_State_t current_state = FSM_STATE_IDLE;
 
+/* ADC Buffers */
+uint16_t adc_raw_buffer[NUM_CHANNELS] = {0};
+uint32_t adc_accumulator[NUM_CHANNELS] = {0};
+uint16_t adc_avg_data[NUM_CHANNELS] = {0};
+uint8_t sample_count = 0;
+
+/* UART Protocol Buffers */
+uint8_t packet_counter = 0;
+uint8_t tx_frame_buffer[FRAME_SIZE] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -57,12 +83,150 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void FSM_Init(void);
+void FSM_Run(void);
+void Build_Tx_Frame(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+  * @brief ADC Conversion Complete Callback (called by DMA interrupt)
+  * @param hadc: pointer to ADC handle
+  */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+  if (hadc->Instance == ADC1)
+  {
+    /* Fast non-blocking ISR: set event flag and return immediately */
+    adc_data_ready = true;
+  }
+}
 
+/**
+  * @brief UART Transmission Complete Callback (called by DMA interrupt)
+  * @param huart: pointer to UART handle
+  */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef* huart)
+{
+  if (huart->Instance == USART1)
+  {
+    uart_tx_busy = false;
+  }
+}
+
+/**
+  * @brief Construct the 21-byte binary transmission packet
+  */
+void Build_Tx_Frame(void)
+{
+  /* Byte 0 - 1: Synchronization Header */
+  tx_frame_buffer[0] = FRAME_HEADER_1;
+  tx_frame_buffer[1] = FRAME_HEADER_2;
+
+  /* Byte 2: Packet Sequence Counter */
+  tx_frame_buffer[2] = packet_counter++;
+
+  /* Byte 3 - 18: 8 Channels (16-bit, Little-Endian) */
+  for (int i = 0; i < NUM_CHANNELS; i++)
+  {
+    tx_frame_buffer[3 + (i * 2)]     = (uint8_t)(adc_avg_data[i] & 0xFF);         /* Low byte */
+    tx_frame_buffer[3 + (i * 2) + 1] = (uint8_t)((adc_avg_data[i] >> 8) & 0xFF);  /* High byte */
+  }
+
+  /* Byte 19: Checksum (XOR from Byte 2 to Byte 18) */
+  uint8_t checksum = 0;
+  for (int i = 2; i <= 18; i++)
+  {
+    checksum ^= tx_frame_buffer[i];
+  }
+  tx_frame_buffer[19] = checksum;
+
+  /* Byte 20: Frame Tail */
+  tx_frame_buffer[20] = FRAME_TAIL;
+}
+
+/**
+  * @brief Initialize FSM and data buffers
+  */
+void FSM_Init(void)
+{
+  adc_data_ready = false;
+  uart_tx_busy = false;
+  sample_count = 0;
+  packet_counter = 0;
+  current_state = FSM_STATE_IDLE;
+  memset(adc_accumulator, 0, sizeof(adc_accumulator));
+  memset(adc_avg_data, 0, sizeof(adc_avg_data));
+}
+
+/**
+  * @brief Execute one step of the Main Loop FSM
+  */
+void FSM_Run(void)
+{
+  switch (current_state)
+  {
+    case FSM_STATE_IDLE:
+      if (adc_data_ready)
+      {
+        current_state = FSM_STATE_PROCESS_SAMPLE;
+      }
+      break;
+
+    case FSM_STATE_PROCESS_SAMPLE:
+      adc_data_ready = false;
+
+      /* Accumulate raw ADC samples for all 8 channels */
+      for (int i = 0; i < NUM_CHANNELS; i++)
+      {
+        adc_accumulator[i] += adc_raw_buffer[i];
+      }
+      sample_count++;
+
+      if (sample_count >= SAMPLES_TO_AVERAGE)
+      {
+        current_state = FSM_STATE_CALC_AVERAGE;
+      }
+      else
+      {
+        current_state = FSM_STATE_IDLE;
+      }
+      break;
+
+    case FSM_STATE_CALC_AVERAGE:
+      /* Calculate average of 4 samples for each channel */
+      for (int i = 0; i < NUM_CHANNELS; i++)
+      {
+        adc_avg_data[i] = (uint16_t)(adc_accumulator[i] / SAMPLES_TO_AVERAGE);
+        adc_accumulator[i] = 0;
+      }
+      sample_count = 0;
+
+      /* Package frame */
+      Build_Tx_Frame();
+
+      current_state = FSM_STATE_SEND_DATA;
+      break;
+
+    case FSM_STATE_SEND_DATA:
+      /* Transmit via UART DMA if not busy */
+      if (!uart_tx_busy)
+      {
+        uart_tx_busy = true;
+        if (HAL_UART_Transmit_DMA(&huart1, tx_frame_buffer, FRAME_SIZE) != HAL_OK)
+        {
+          uart_tx_busy = false;
+        }
+      }
+      current_state = FSM_STATE_IDLE;
+      break;
+
+    default:
+      current_state = FSM_STATE_IDLE;
+      break;
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -101,13 +265,22 @@ int main(void)
   MX_ADC1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  FSM_Init();
 
+  /* Start ADC1 with DMA in circular mode */
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_raw_buffer, NUM_CHANNELS);
+
+  /* Note: When Timer (e.g. TIM2) is configured for 1 kHz trigger, start it here:
+   * HAL_TIM_Base_Start(&htim2);
+   */
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* Run FSM state machine */
+    FSM_Run();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -367,6 +540,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+  /* DMA1_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
 }
 

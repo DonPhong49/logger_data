@@ -4,17 +4,17 @@
 * **Sinh viên thực hiện:** Mai Sỹ (MSV: 2022603955)
 * **Lớp:** 2022DHKTMT01 - Khoa Công nghệ Thông tin / Trường Điện - Điện tử (ĐH Công nghiệp Hà Nội)
 * **Vi điều khiển mục tiêu:** STM32H743VIT6 (ARM Cortex-M7, 480 MHz)
-* **Tài liệu cập nhật:** Theo yêu cầu điều chỉnh tần số thu thập và truyền thông mới (ADC 1 kHz -> Trung bình -> Truyền RS232 400 Hz).
+* **Tài liệu cập nhật:** Theo yêu cầu điều chỉnh tần số thu thập và truyền thông mới (ADC 1 kHz -> Lọc trung bình 4 mẫu -> Truyền RS232 250 Hz).
 
 ---
 
 ## 1. TỔNG QUAN BÀI TOÁN & MỤC TIÊU PHẦN MỀM
 
-Hệ thống có nhiệm vụ thu thập tín hiệu analog từ 8 kênh độc lập (dải điện áp đo 0 – 12V qua mạch suy hao phần cứng về 0 – 3.3V), chuyển đổi ADC 16-bit, thực hiện lấy mẫu với tần số 1 kHz, lọc lấy trung bình và gửi lên máy tính với tần số 400 Hz qua chuẩn giao tiếp UART/RS232 (baudrate 115200 bps). Trên máy tính, một ứng dụng chuyên dụng sẽ nhận luồng dữ liệu thời gian thực, kiểm tra toàn vẹn, giải mã, hiển thị đồ thị sóng 8 kênh và ghi dữ liệu ra file phục vụ lưu trữ, phân tích.
+Hệ thống có nhiệm vụ thu thập tín hiệu analog từ 8 kênh độc lập (dải điện áp đo 0 – 12V qua mạch suy hao phần cứng về 0 – 3.3V), chuyển đổi ADC 16-bit, thực hiện lấy mẫu với tần số 1 kHz, lọc lấy trung bình 4 mẫu và gửi lên máy tính với tần số 250 Hz qua chuẩn giao tiếp UART/RS232 (baudrate 115200 bps). Trên máy tính, một ứng dụng chuyên dụng sẽ nhận luồng dữ liệu thời gian thực, kiểm tra toàn vẹn, giải mã, hiển thị đồ thị sóng 8 kênh và ghi dữ liệu ra file phục vụ lưu trữ, phân tích.
 
 ### Hệ thống gồm 2 thành phần phần mềm chính:
 1. **Firmware nhúng (STM32H743VIT6):** Đảm nhiệm định thời gian cứng (Hardware Timer), kích hoạt ADC đa kênh qua DMA, tính toán lọc trung bình dữ liệu, đóng gói dữ liệu theo giao thức khung (packet protocol) và truyền UART qua DMA.
-2. **Ứng dụng giám sát trên máy tính (PC Desktop App):** Đảm nhiệm mở cổng Serial, giải mã luồng byte tốc độ cao (400 gói/giây), hiển thị đồ thị 8 kênh thời gian thực (Real-time plotting), tính toán các thông số điện áp và ghi file log (CSV).
+2. **Ứng dụng giám sát trên máy tính (PC Desktop App):** Đảm nhiệm mở cổng Serial, giải mã luồng byte tốc độ cao (250 gói/giây), hiển thị đồ thị 8 kênh thời gian thực (Real-time plotting), tính toán các thông số điện áp và ghi file log (CSV).
 
 ---
 
@@ -74,7 +74,7 @@ Chương trình chính được cấu trúc dạng máy trạng thái phi phong 
 ```
 
 ### 2.4. Thiết kế giao thức truyền thông (UART Packet Protocol)
-Để đảm bảo ứng dụng máy tính nhận đúng từng khung dữ liệu ở tốc độ 400 Hz, tránh hiện tượng lệch pha byte, khung dữ liệu nhị phân (Binary Protocol) được thiết kế nhỏ gọn, tối ưu băng thông:
+Để đảm bảo ứng dụng máy tính nhận đúng từng khung dữ liệu ở tốc độ 250 Hz, tránh hiện tượng lệch pha byte, khung dữ liệu nhị phân (Binary Protocol) được thiết kế nhỏ gọn, tối ưu băng thông:
 
 #### Cấu trúc khung dữ liệu (Tổng cộng: 21 bytes/gói):
 | Thứ tự Byte | Trường dữ liệu | Kiểu dữ liệu | Mô tả |
@@ -95,10 +95,10 @@ Chương trình chính được cấu trúc dạng máy trạng thái phi phong 
 
 #### Phân tích tải đường truyền UART:
 * Chiều dài mỗi khung tin: 21 bytes.
-* Tần số gửi: 400 gói/giây.
-* Lưu lượng dữ liệu cần truyền: `21 bytes x 400 = 8400 bytes/giây`.
+* Tần số gửi: 250 gói/giây (chu kỳ 4 ms).
+* Lưu lượng dữ liệu cần truyền: `21 bytes x 250 = 5250 bytes/giây`.
 * Băng thông tối đa của UART 115200 (8N1: 10 bit/byte): `115200 / 10 = 11520 bytes/giây`.
-* **Hệ số tải (Bus Load):** `8400 / 11520 = 72.9%` (rất an toàn, không bị nghẽn buffer UART).
+* **Hệ số tải (Bus Load):** `5250 / 11520 = 45.6%` (cực kỳ nhẹ nhàng và an toàn, đường truyền thông suốt, không bao giờ bị nghẽn buffer UART).
 
 ---
 
@@ -107,12 +107,12 @@ Chương trình chính được cấu trúc dạng máy trạng thái phi phong 
 ### 3.1. Lựa chọn công nghệ phát triển
 * **Ngôn ngữ:** Python 3.10+ (Được khuyến nghị cao nhất cho đồ án kỹ thuật máy tính).
 * **Framework Giao diện (GUI):** `PyQt6` hoặc `PySide6`.
-* **Thư viện vẽ đồ thị thời gian thực:** `PyQtGraph` (Xử lý đồ thị bằng OpenGL / GPU, vẽ mượt mà ở tốc độ 400 Hz với 8 kênh cùng lúc mà không gây đơ lag giao diện).
+* **Thư viện vẽ đồ thị thời gian thực:** `PyQtGraph` (Xử lý đồ thị bằng OpenGL / GPU, vẽ mượt mà ở tốc độ 250 Hz với 8 kênh cùng lúc mà không gây đơ lag giao diện).
 * **Giao tiếp phần cứng:** `pyserial` (giao tiếp cổng COM).
 * **Xử lý số liệu & Xuất file:** `numpy`, `csv`, `pandas`.
 
 ### 3.2. Kiến trúc đa luồng (Multi-threading Architecture)
-Để ứng dụng không bị "Not Responding" khi nhận 400 gói dữ liệu/giây kết hợp vẽ đồ thị và ghi đĩa, hệ thống được chia làm 3 luồng riêng biệt:
+Để ứng dụng không bị "Not Responding" khi nhận 250 gói dữ liệu/giây kết hợp vẽ đồ thị và ghi đĩa, hệ thống được chia làm 3 luồng riêng biệt:
 
 ```
 [STM32 via RS232]
@@ -163,7 +163,7 @@ Chương trình chính được cấu trúc dạng máy trạng thái phi phong 
    * Đặt tên file tự động theo thời gian: `Log_YYYYMMDD_HHMMSS.csv`.
    * Nút Start Recording / Stop Recording kèm thời gian đã ghi và dung lượng file.
 5. **Khối chẩn đoán truyền thông (Diagnostics):**
-   * Tần số nhận thực tế (Packets/second - mục tiêu đạt đúng ~400 Hz).
+   * Tần số nhận thực tế (Packets/second - mục tiêu đạt đúng ~250 Hz).
    * Số lượng gói tin nhận thành công.
    * Số lượng gói lỗi Checksum (Error packets) và số gói bị mất (Dropped packets).
 
@@ -174,16 +174,16 @@ Chương trình chính được cấu trúc dạng máy trạng thái phi phong 
 ### Giai đoạn 1: Lập trình vi điều khiển STM32H7
 * [ ] Cấu hình Timer (ví dụ TIM2) tạo sự kiện ngắt TRGO với tần số 1 kHz (chu kỳ 1 ms).
 * [ ] Cấu hình ADC1 kích hoạt qua TIM TRGO, DMA Circular Mode để đọc tuần tự 8 kênh.
-* [ ] Cài đặt thuật toán lấy mẫu và lọc trung bình (Decimation / Moving Average) đưa nhịp ra 400 Hz.
+* [ ] Cài đặt máy trạng thái FSM trong main loop: tích lũy 4 mẫu và lọc trung bình đưa nhịp ra 250 Hz.
 * [ ] Viết module đóng gói khung truyền (21 bytes có Header, Counter, Checksum).
-* [ ] Cấu hình USART1 TX DMA để truyền khung dữ liệu lên máy tính với chu kỳ 2.5 ms (400 Hz).
+* [ ] Cấu hình USART1 TX DMA để truyền khung dữ liệu lên máy tính với chu kỳ 4 ms (250 Hz).
 * [ ] Kiểm tra thực nghiệm tín hiệu TX trên máy hiện sóng (Oscilloscope) hoặc phần mềm kiểm tra cổng Serial.
 
 ### Giai đoạn 2: Lập trình phần mềm máy tính (Python GUI)
 * [ ] Viết module kết nối Serial đa luồng (`serial_reader.py`) bóc tách khung 21 bytes và kiểm tra Checksum.
 * [ ] Viết module ghi dữ liệu CSV đa luồng (`data_logger.py`).
 * [ ] Thiết kế giao diện đồ họa bằng PyQt6 / PySide6 (`main_window.py`).
-* [ ] Tích hợp đồ thị đa kênh bằng PyQtGraph, tối ưu hiệu năng vẽ 400 Hz.
+* [ ] Tích hợp đồ thị đa kênh bằng PyQtGraph, tối ưu hiệu năng vẽ 250 Hz.
 * [ ] Kiểm tra đồng bộ dữ liệu, đo tỷ lệ mất gói (< 0.01%).
 
 ### Giai đoạn 3: Hiệu chuẩn & Đánh giá toàn hệ thống
