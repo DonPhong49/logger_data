@@ -1,0 +1,9 @@
+# Build outputs
+Debug/
+Release/
+
+# OS / Editor generated
+.DS_Store
+Thumbs.db
+*.swp
+*~
